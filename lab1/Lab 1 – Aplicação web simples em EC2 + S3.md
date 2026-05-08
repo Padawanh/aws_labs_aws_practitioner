@@ -6,41 +6,116 @@ Praticar computação (EC2), rede básica (VPC, Security Groups), armazenamento 
 **Cenário:**  
 Criar uma **API simples** em uma instância EC2 que lê e grava arquivos em um bucket S3.
 
-### Atividades
+---
 
-1. **VPC e segurança básica**
-   - Usar a **VPC default** (para simplificar) ou criar uma VPC simples com:
-     - 1 subnet pública.
-     - Internet Gateway.
-   - Criar um **Security Group**:
-     - Permitir HTTP (porta 80) de `0.0.0.0/0` (ou apenas do IP do aluno).
-     - Permitir SSH (porta 22) apenas do IP do aluno.
+## Visão geral das atividades
 
-2. **Criar a instância EC2**
-   - Tipo: `t2.micro` ou `t3.micro` (Free Tier).
-   - AMI: Amazon Linux 2 (ou similar).
-   - Associar a instância ao Security Group criado.
-   - Conectar via SSH (ou via Session Manager, se quiserem explorar o Systems Manager).
+1. VPC e segurança básica
+2. Criar a instância EC2
+3. Criar o bucket S3
+4. Configurar IAM Role para EC2
+5. Sobre o código da API
+6. Subir a API na EC2
+7. Testar do seu computador local
+8. Alta disponibilidade conceitual *(opcional)*
 
-3. **Instalar uma API simples**
-   - Na instância, instalar um servidor web simples, por exemplo:
-     - Python + Flask
-   - Criar uma API com endpoints como:
-     - `GET /files` – lista objetos de um bucket S3.
-     - `POST /files` – faz upload de um texto simples para o S3.
-   - O código pode ser bem simples; o foco é entender o fluxo EC2 → S3.
+---
 
-### Implementação da API (código pronto)
+## Passo a passo
 
-Código criado na pasta `lab1/api`:
+### 1. VPC e segurança básica
 
-- `app.py`: API Flask com endpoints:
+- Usar a **VPC default** (para simplificar) ou criar uma VPC simples com:
+  - 1 subnet pública.
+  - Internet Gateway.
+- Criar um **Security Group** com as seguintes regras de entrada:
+  - SSH (porta 22) apenas do seu IP.
+  - Custom TCP (porta 5000) apenas do seu IP.
+    > Para descobrir seu IP público: acesse [https://checkip.amazonaws.com](https://checkip.amazonaws.com)
+
+---
+
+### 2. Criar a instância EC2
+
+- **Tipo**: `t2.micro` ou `t3.micro` (Free Tier).
+- **AMI**: Amazon Linux 2 (ou similar).
+- Associar ao Security Group criado no passo anterior.
+- Conectar via SSH após a criação.
+
+---
+
+### 3. Criar o bucket S3
+
+1. Vá em **S3 → Create bucket**.
+2. **Bucket name**: use um nome único global (ex.: `lab-ec2-s3-seunome-2026`).
+3. **Região**: escolha a **mesma região** da sua EC2 (ex.: `us-east-1`).
+4. **Object Ownership**: deixe ACLs desabilitadas (padrão).
+5. **Block Public Access**: mantenha **tudo bloqueado**.
+6. **Bucket Versioning**: clique em **Enable**.
+7. Clique em **Create bucket**.
+
+> Guarde o nome exato do bucket — você vai usá-lo mais à frente.
+
+---
+
+### 4. Configurar IAM Role para EC2
+
+#### 4a. Criar a IAM Policy mínima
+
+1. Vá em **IAM → Policies → Create policy**.
+2. Clique na aba **JSON** e cole o conteúdo abaixo, substituindo `NOME_DO_BUCKET`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::NOME_DO_BUCKET"
+    },
+    {
+      "Sid": "PutObject",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::NOME_DO_BUCKET/*"
+    }
+  ]
+}
+```
+
+> O ARN do `ListBucket` aponta para o bucket (sem `/`); o do `PutObject` aponta para objetos dentro dele (com `/*`). Invertê-los gera `AccessDenied`.
+
+3. Dê o nome `policy-lab1-s3` e clique em **Create policy**.
+
+#### 4b. Criar a IAM Role
+
+1. Vá em **IAM → Roles → Create role**.
+2. **Trusted entity**: AWS service → **EC2**. Clique em **Next**.
+3. Busque e selecione `policy-lab1-s3`. Clique em **Next**.
+4. **Role name**: `role-ec2-lab1-s3`. Clique em **Create role**.
+
+#### 4c. Anexar a Role na instância
+
+1. Vá em **EC2 → Instances** e selecione sua instância.
+2. **Actions → Security → Modify IAM role**.
+3. Selecione `role-ec2-lab1-s3` e clique em **Update IAM role**.
+4. Aguarde ~1 minuto para propagação.
+
+---
+
+### 5. Sobre o código da API
+
+O código já está pronto na pasta `lab1/api`:
+
+- **`app.py`** – API Flask com três endpoints:
   - `GET /health` – health check.
   - `GET /files` – lista objetos do bucket S3.
   - `POST /files` – envia texto para o S3.
-- `requirements.txt`: dependências (`Flask` e `boto3`).
+- **`requirements.txt`** – dependências (`Flask` e `boto3`).
 
-Formato esperado no `POST /files`:
+Formato do corpo esperado no `POST /files`:
 
 ```json
 {
@@ -49,104 +124,118 @@ Formato esperado no `POST /files`:
 }
 ```
 
-Se `filename` não for enviado, a API gera um nome automático.
+Se `filename` não for enviado, a API gera um nome automático com timestamp.
 
-### Como executar na EC2
+---
 
-1. Acesse a instância via SSH.
-2. Na EC2 (Amazon Linux 2), instale Python e crie o ambiente virtual:
+### 6. Subir a API na EC2
+
+Conecte-se via SSH e execute:
 
 ```bash
+# Atualiza pacotes e instala Python 3
 sudo yum update -y
 sudo yum install -y python3
 
+# Navega até a pasta da API
 cd ~/aws_labs_aws_practitioner/lab1/api
+
+# Cria e ativa o ambiente virtual
 python3 -m venv .venv
 source .venv/bin/activate
+
+# Instala as dependências
 pip install -r requirements.txt
-```
 
-3. Defina variáveis de ambiente e inicie a API:
-
-```bash
-export BUCKET_NAME="SEU_BUCKET_UNICO"
+# Define as variáveis de ambiente (substitua pelo nome real do bucket)
+export BUCKET_NAME="NOME_DO_BUCKET"
 export AWS_REGION="us-east-1"
+
+# Inicia a API
 python app.py
 ```
 
-A API sobe em `0.0.0.0:5000`.
+Se aparecer `Running on http://0.0.0.0:5000`, a API está no ar.
 
-### O que precisa estar pronto na AWS (infra manual)
-
-- EC2 com Role IAM anexada contendo no mínimo:
-  - `s3:ListBucket` no bucket.
-  - `s3:PutObject` no bucket (ARN com `/*` para objetos).
-- Bucket S3 já criado e sem acesso público.
-- Security Group da EC2 com entrada liberada para `TCP 5000` a partir do IP da sua máquina local (ou faixa permitida no seu cenário de aula).
-
-### Como testar do seu computador local
-
-Use o IP público da EC2 no lugar de `<EC2_PUBLIC_IP>`.
-
-#### Teste com curl
+**Valide localmente antes de testar do seu PC** (em outro terminal SSH):
 
 ```bash
+curl http://127.0.0.1:5000/health
+curl http://127.0.0.1:5000/files
+```
+
+- Falha aqui → problema na aplicação ou dependências.
+- Funciona aqui mas não do seu PC → problema no Security Group.
+
+---
+
+### 7. Testar do seu computador local
+
+Substitua `<EC2_PUBLIC_IP>` pelo **IPv4 público** da instância (visível no Console EC2).
+
+#### curl (Linux / macOS / Git Bash)
+
+```bash
+# Health check
 curl http://<EC2_PUBLIC_IP>:5000/health
 
+# Listar arquivos no bucket
 curl http://<EC2_PUBLIC_IP>:5000/files
 
+# Fazer upload de um arquivo
 curl -X POST http://<EC2_PUBLIC_IP>:5000/files \
   -H "Content-Type: application/json" \
   -d '{"filename":"teste.txt","content":"ola do meu computador"}'
 
+# Confirmar que o arquivo aparece na listagem
 curl http://<EC2_PUBLIC_IP>:5000/files
 ```
 
-#### Teste com PowerShell (Windows)
+#### PowerShell (Windows)
 
 ```powershell
+# Health check
 Invoke-RestMethod -Method Get -Uri "http://<EC2_PUBLIC_IP>:5000/health"
 
+# Listar arquivos no bucket
 Invoke-RestMethod -Method Get -Uri "http://<EC2_PUBLIC_IP>:5000/files"
 
-$body = @{
-  filename = "teste-powershell.txt"
-  content  = "ola via PowerShell"
-} | ConvertTo-Json
+# Fazer upload de um arquivo
+$body = @{ filename = "teste-ps.txt"; content = "ola via PowerShell" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://<EC2_PUBLIC_IP>:5000/files" `
+  -ContentType "application/json" -Body $body
 
-Invoke-RestMethod -Method Post -Uri "http://<EC2_PUBLIC_IP>:5000/files" -ContentType "application/json" -Body $body
-
+# Confirmar que o arquivo aparece na listagem
 Invoke-RestMethod -Method Get -Uri "http://<EC2_PUBLIC_IP>:5000/files"
 ```
 
-### Observações rápidas
+#### Erros comuns
 
-- Esta implementação é propositalmente simples para fins didáticos.
-- Em produção, usar servidor WSGI (ex.: Gunicorn), TLS e endpoint atrás de ALB.
+| Sintoma | Causa provável | Solução |
+|---|---|---|
+| `AccessDenied` em `GET /files` | ARN do `ListBucket` com `/*` | Remova o `/*` do ARN do bucket |
+| `AccessDenied` em `POST /files` | ARN do `PutObject` sem `/*` | Adicione `/*` ao ARN dos objetos |
+| `Connection refused` / timeout | Porta 5000 não liberada no SG | Adicione inbound rule TCP 5000 com seu IP |
+| `EndpointConnectionError` | `AWS_REGION` incorreto | Confirme que bucket e EC2 estão na mesma região |
+| Funciona na EC2, não do PC | `app.run` sem `0.0.0.0` | Verifique `host="0.0.0.0"` no `app.py` |
+| Sem credenciais na EC2 | Role não anexada | Refaça o passo 4c e aguarde 1–2 min |
 
-4. **Criar bucket S3**
-   - Criar um bucket com nome único (por exemplo, `lab-ec2-s3-grupoX`).
-   - Habilitar **versionamento** (para discutir depois).
-   - Manter o bucket **sem acesso público** (acesso apenas via API/SDK).
+> Esta implementação é propositalmente simples para fins didáticos. Em produção: usar Gunicorn, TLS e ALB.
 
-5. **Configurar IAM Role para EC2**
-   - Criar uma **IAM Role** para EC2 com política mínima:
-     - `s3:ListBucket` no bucket.
-     - `s3:PutObject` no bucket.
-   - Anexar a Role à instância EC2.
-   - Testar a API:
-     - `GET /files` deve listar o conteúdo do bucket.
-     - `POST /files` deve criar um objeto no bucket.
+---
 
-6. **Alta disponibilidade conceitual (opcional)**
-   - Discutir: se essa instância cair, o que acontece?
-   - Criar um **Auto Scaling Group (ASG)** mínimo com 1–2 instâncias.
-   - Criar um **Application Load Balancer (ALB)**:
-     - Criar um Target Group apontando para as instâncias do ASG.
-     - Configurar o ALB para encaminhar tráfego HTTP para o Target Group.
-   - Acessar a API via DNS do ALB (em vez de IP da instância).
+### 8. Alta disponibilidade conceitual *(opcional)*
 
-### Domínios do exame reforçados
+- Discutir: se essa instância cair, o que acontece?
+- Criar um **Auto Scaling Group (ASG)** mínimo com 1–2 instâncias.
+- Criar um **Application Load Balancer (ALB)**:
+  - Criar um Target Group apontando para as instâncias do ASG.
+  - Configurar o ALB para encaminhar tráfego HTTP para o Target Group.
+- Acessar a API via DNS do ALB (em vez do IP da instância).
+
+---
+
+## Domínios do exame reforçados
 
 - **Domínio 3 – Tecnologia e serviços da nuvem**
   - EC2, VPC, Security Groups, S3, Auto Scaling, Load Balancer.
